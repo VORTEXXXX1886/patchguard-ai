@@ -29,21 +29,30 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _git_status_paths(root: Path) -> list[str]:
-    result = _git(root, "status", "--porcelain")
+    # -z prevents Git from quoting filenames containing spaces or other special
+    # characters. For renames, porcelain v1 -z emits the new path first and the
+    # old path as the following NUL-delimited field.
+    output = _git(root, "status", "--porcelain", "-z").stdout
+    fields = output.split("\0")
     files: list[str] = []
-    for line in result.stdout.splitlines():
-        if not line.strip():
+    index = 0
+
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
             continue
-        status = line[:2]
-        path_part = line[3:]
 
-        if " -> " in path_part:
-            _, new_path = path_part.split(" -> ", 1)
-            files.append(new_path.strip())
-        elif status.startswith("??") or status.strip():
-            files.append(path_part.strip())
+        status = entry[:2]
+        path = entry[3:]
+        if path:
+            files.append(path)
 
-    return [path for path in files if path]
+        if "R" in status or "C" in status:
+            # Skip the old path associated with the rename/copy record.
+            index += 1
+
+    return files
 
 
 def _git_changed_files(root: Path, base: str | None = None) -> list[str]:
