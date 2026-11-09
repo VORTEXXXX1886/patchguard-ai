@@ -7,45 +7,99 @@ from pathlib import Path
 from patchguard_ai.config import PatchguardConfig
 
 
-def _git_changed_files(root: Path) -> list[str]:
+class GitError(RuntimeError):
+    """Raised when the requested git repository cannot be inspected."""
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "diff", "--name-only", "HEAD"],
+            ["git", "-C", str(root), *args],
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    except FileNotFoundError:
-        return []
+    except FileNotFoundError as exc:
+        raise GitError("Git executable was not found") from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"git {' '.join(args)} failed"
+        raise GitError(detail)
+    return result
+
+
+def _git_status_paths(root: Path) -> list[str]:
+    # -z prevents Git from quoting filenames containing spaces or other special
+    # characters. For renames, porcelain v1 -z emits the new path first and the
+    # old path as the following NUL-delimited field.
+    output = _git(root, "status", "--porcelain", "-z").stdout
+    fields = output.split("\0")
+    files: list[str] = []
+    index = 0
+
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+
+        status = entry[:2]
+        path = entry[3:]
+        if path:
+            files.append(path)
+
+        if "R" in status or "C" in status:
+            # Skip the old path associated with the rename/copy record.
+            index += 1
+
+    return files
+
+
+def _git_changed_files(root: Path, base: str | None = None) -> list[str]:
+    """Return changed files in the worktree and, optionally, since a base ref.
+
+    A base comparison includes committed changes between the merge base and HEAD.
+    The current Git status is always included, covering staged, unstaged, and
+    untracked files. Git errors (including an unknown base ref) are not hidden.
+    """
+    _git(root, "rev-parse", "--show-toplevel")
+
+    files: list[str] = []
+    if base:
+        diff = _git(root, "diff", "--name-only", "-z", f"{base}...HEAD", "--")
+        files.extend(path for path in diff.stdout.split("\0") if path)
+
+    files.extend(_git_status_paths(root))
+    return list(dict.fromkeys(files))
 
 
 def _matches_any(patterns: list[str], file_path: str) -> bool:
     return any(
-        fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(file_path, f"{pattern}/**")
+        fnmatch.fnmatch(file_path, pattern)
+        or fnmatch.fnmatch(file_path, f"{pattern}/**")
         for pattern in patterns
     )
 
 
-def _check_allowed_paths(changed_files: list[str], allowed_paths: list[str]) -> tuple[bool, list[str]]:
+def _check_allowed_paths(
+    changed_files: list[str], allowed_paths: list[str]
+) -> tuple[bool, list[str]]:
     if not allowed_paths:
         return True, []
 
-    violations: list[str] = []
-    for file_path in changed_files:
-        if not _matches_any(allowed_paths, file_path):
-            violations.append(file_path)
+    violations = [
+        file_path for file_path in changed_files
+        if not _matches_any(allowed_paths, file_path)
+    ]
     return not violations, violations
 
 
 def _check_required_files(root: Path, required_files: list[str]) -> tuple[bool, list[str]]:
-    missing: list[str] = []
-    for relative_path in required_files:
-        target = (root / relative_path).resolve()
-        if not target.exists():
-            missing.append(relative_path)
+    missing = [
+        relative_path
+        for relative_path in required_files
+        if not (root / relative_path).resolve().exists()
+    ]
     return not missing, missing
 
 
@@ -61,36 +115,43 @@ def run_command(command: str, cwd: Path) -> tuple[bool, str]:
         )
         combined = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
         return completed.returncode == 0, combined.strip()
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive path
         return False, str(exc)
 
 
-def run_checks(root: Path, config: PatchguardConfig) -> dict:
-    changed_files = _git_changed_files(root)
+def run_checks(root: Path, config: PatchguardConfig, base: str | None = None) -> dict:
+    git_error: str | None = None
+    try:
+        changed_files = _git_changed_files(root, base)
+    except GitError as exc:
+        changed_files = []
+        git_error = str(exc)
+
     allowed_ok, scope_violations = _check_allowed_paths(changed_files, config.allowed_paths)
     required_ok, missing_files = _check_required_files(root, config.required_files)
 
     command_results: list[dict[str, str | bool]] = []
     for command in config.commands:
         success, output = run_command(command, root)
-        command_results.append({
-            "command": command,
-            "passed": success,
-            "output": output,
-        })
+        command_results.append({"command": command, "passed": success, "output": output})
 
-    check_passed = allowed_ok and required_ok and all(item["passed"] for item in command_results)
+    commands_ok = all(item["passed"] for item in command_results)
+    git_ok = git_error is None
+    passed = git_ok and allowed_ok and required_ok and commands_ok
 
     return {
         "path": str(root),
-        "passed": check_passed,
+        "base": base,
+        "passed": passed,
+        "git_error": git_error,
         "changed_files": changed_files,
         "scope_violations": scope_violations,
         "missing_files": missing_files,
         "command_results": command_results,
         "summary": {
+            "git_ok": git_ok,
             "allowed_paths_ok": allowed_ok,
             "required_files_ok": required_ok,
-            "commands_ok": all(item["passed"] for item in command_results),
+            "commands_ok": commands_ok,
         },
     }
