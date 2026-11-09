@@ -1,0 +1,7 @@
+commands:
+  - python -m pytest -q
+  - python -m compileall -q src
+
+required_files:
+  - README.md
+  - pyproject.toml
