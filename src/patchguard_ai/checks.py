@@ -28,10 +28,6 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def _nul_paths(output: str) -> list[str]:
-    return [path for path in output.split("\0") if path]
-
-
 def _git_status_paths(root: Path) -> list[str]:
     result = _git(root, "status", "--porcelain")
     files: list[str] = []
@@ -44,37 +40,25 @@ def _git_status_paths(root: Path) -> list[str]:
         if " -> " in path_part:
             _, new_path = path_part.split(" -> ", 1)
             files.append(new_path.strip())
-            continue
-
-        if status.startswith("??"):
-            files.append(path_part.strip())
-            continue
-
-        if status.strip():
+        elif status.startswith("??") or status.strip():
             files.append(path_part.strip())
 
-    return [item for item in files if item]
+    return [path for path in files if path]
 
 
 def _git_changed_files(root: Path, base: str | None = None) -> list[str]:
-    """Return changed file paths for the worktree, optionally comparing to a base ref.
+    """Return changed files in the worktree and, optionally, since a base ref.
 
-    Without ``base``, we use `git status --porcelain` because it captures staged,
-    unstaged, and untracked files. With ``base``, we also include files changed
-    between the base and HEAD, which makes PR-style comparisons possible.
+    A base comparison includes committed changes between the merge base and HEAD.
+    The current Git status is always included, covering staged, unstaged, and
+    untracked files. Git errors (including an unknown base ref) are not hidden.
     """
     _git(root, "rev-parse", "--show-toplevel")
 
     files: list[str] = []
     if base:
-        # Compare the requested base ref to the current HEAD. This is useful for PR
-        # or branch review flows where the relevant patch is the delta since a target.
-        try:
-            base_diff = _git(root, "diff", "--name-only", "-z", f"{base}...HEAD")
-            files.extend(_nul_paths(base_diff.stdout))
-        except GitError:
-            # The base ref may not exist yet; in that case we fall back to worktree status.
-            pass
+        diff = _git(root, "diff", "--name-only", "-z", f"{base}...HEAD", "--")
+        files.extend(path for path in diff.stdout.split("\0") if path)
 
     files.extend(_git_status_paths(root))
     return list(dict.fromkeys(files))
@@ -82,24 +66,30 @@ def _git_changed_files(root: Path, base: str | None = None) -> list[str]:
 
 def _matches_any(patterns: list[str], file_path: str) -> bool:
     return any(
-        fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(file_path, f"{pattern}/**")
+        fnmatch.fnmatch(file_path, pattern)
+        or fnmatch.fnmatch(file_path, f"{pattern}/**")
         for pattern in patterns
     )
 
 
-def _check_allowed_paths(changed_files: list[str], allowed_paths: list[str]) -> tuple[bool, list[str]]:
+def _check_allowed_paths(
+    changed_files: list[str], allowed_paths: list[str]
+) -> tuple[bool, list[str]]:
     if not allowed_paths:
         return True, []
 
     violations = [
-        file_path for file_path in changed_files if not _matches_any(allowed_paths, file_path)
+        file_path for file_path in changed_files
+        if not _matches_any(allowed_paths, file_path)
     ]
     return not violations, violations
 
 
 def _check_required_files(root: Path, required_files: list[str]) -> tuple[bool, list[str]]:
     missing = [
-        relative_path for relative_path in required_files if not (root / relative_path).resolve().exists()
+        relative_path
+        for relative_path in required_files
+        if not (root / relative_path).resolve().exists()
     ]
     return not missing, missing
 
@@ -134,11 +124,7 @@ def run_checks(root: Path, config: PatchguardConfig, base: str | None = None) ->
     command_results: list[dict[str, str | bool]] = []
     for command in config.commands:
         success, output = run_command(command, root)
-        command_results.append({
-            "command": command,
-            "passed": success,
-            "output": output,
-        })
+        command_results.append({"command": command, "passed": success, "output": output})
 
     commands_ok = all(item["passed"] for item in command_results)
     git_ok = git_error is None
