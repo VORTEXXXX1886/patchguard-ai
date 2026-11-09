@@ -8,18 +8,49 @@ from patchguard_ai.config import PatchguardConfig
 
 
 def _git_changed_files(root: Path) -> list[str]:
+    """Return tracked, staged, and untracked file paths in the repo.
+
+    We intentionally use `git status --porcelain` so changes are captured even when
+    they are untracked and not part of `git diff HEAD`.
+    """
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "diff", "--name-only", "HEAD"],
+            ["git", "-C", str(root), "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
     except FileNotFoundError:
         return []
+
+    if result.returncode != 0:
+        return []
+
+    files: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        # Example formats include:
+        # " M file.py"
+        # "M  file.py"
+        # "?? new_file.py"
+        # "R  old.py -> new.py"
+        status = line[:2]
+        path_part = line[3:]
+
+        if " -> " in path_part:
+            _, new_path = path_part.split(" -> ", 1)
+            files.append(new_path.strip())
+            continue
+
+        if status.startswith("??"):
+            files.append(path_part.strip())
+            continue
+
+        if status.strip():
+            files.append(path_part.strip())
+
+    return [item for item in files if item]
 
 
 def _matches_any(patterns: list[str], file_path: str) -> bool:
@@ -61,7 +92,7 @@ def run_command(command: str, cwd: Path) -> tuple[bool, str]:
         )
         combined = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
         return completed.returncode == 0, combined.strip()
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive path
         return False, str(exc)
 
 
