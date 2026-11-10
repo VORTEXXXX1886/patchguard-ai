@@ -61,6 +61,41 @@ patchguard-ai
 
 The CLI executes configured commands with the repository as its working directory. Only use config you trust; commands run through a shell.
 
+## Example: catch an out-of-scope change
+
+Suppose a project only wants changes under `src/` and `tests/`. Save this as `.patchguard-demo.yml`:
+
+```yaml
+allowed_paths:
+  - "src/**"
+  - "tests/**"
+  - ".patchguard-demo.yml"
+```
+
+The config file is included in the allowed paths so Git detecting it as a new file does not create an extra scope violation. Now make a change to `README.md` and run:
+
+```bash
+patchguard-ai --config .patchguard-demo.yml
+```
+
+If `README.md` and `.patchguard-demo.yml` are the only changed files, the text report will look like this (the repository path may differ):
+
+```text
+patchguard-ai: C:\path\to\project
+Status: FAIL
+Changed files: 2
+Scope violations:
+  - README.md
+```
+
+Generate a copyable handoff prompt for the failure:
+
+```bash
+patchguard-ai --config .patchguard-demo.yml --format prompt
+```
+
+The prompt includes the detected files and scope violation, so a coding assistant can investigate. The example is illustrative; the reported files depend on the current Git state.
+
 ## Options
 
 Check a different repository:
