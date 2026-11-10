@@ -24,9 +24,16 @@ From a fresh clone:
 python -m venv .venv
 # macOS/Linux
 source .venv/bin/activate
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
+# Windows PowerShell (if script activation is permitted)
+& .\.venv\Scripts\Activate.ps1
 python -m pip install -e . pytest
+```
+
+If PowerShell blocks script activation, you can skip activation and invoke the environment's Python directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e . pytest
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 Or install the package directly from the repo root:
@@ -43,6 +50,7 @@ Create `.patchguard.yml` in the repository root:
 commands:
   - python -m pytest -q
   - python -m compileall -q src
+command_timeout: 300
 
 required_files:
   - README.md
@@ -52,6 +60,8 @@ allowed_paths:
   - "src/**"
   - "tests/**"
 ```
+
+`command_timeout` is the maximum duration in seconds for each validation command; it defaults to 300 seconds and must be positive.
 
 Run it from the repository you want to validate:
 

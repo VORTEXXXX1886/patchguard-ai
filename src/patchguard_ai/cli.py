@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from patchguard_ai.checks import run_checks
-from patchguard_ai.config import default_config_path, load_config
+from patchguard_ai.config import ConfigError, default_config_path, load_config
 
 
 _MAX_OUTPUT_CHARS = 8000
@@ -126,8 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     if not config_path.exists():
         parser.error(f"config file not found: {config_path}")
 
-    config = load_config(config_path)
-    results = run_checks(repo_root, config, base=args.base)
+    try:
+        config = load_config(config_path)
+        results = run_checks(repo_root, config, base=args.base)
+    except (ConfigError, ValueError) as exc:
+        parser.error(str(exc))
 
     if args.format == "json":
         print(json.dumps(results, indent=2))

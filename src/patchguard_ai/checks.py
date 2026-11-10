@@ -95,15 +95,22 @@ def _check_allowed_paths(
 
 
 def _check_required_files(root: Path, required_files: list[str]) -> tuple[bool, list[str]]:
-    missing = [
-        relative_path
-        for relative_path in required_files
-        if not (root / relative_path).resolve().exists()
-    ]
+    resolved_root = root.resolve()
+    missing: list[str] = []
+    for relative_path in required_files:
+        candidate = (root / relative_path).resolve()
+        if not candidate.is_relative_to(resolved_root):
+            raise ValueError(
+                f"required file path '{relative_path}' resolves outside repository root"
+            )
+        if not candidate.exists():
+            missing.append(relative_path)
     return not missing, missing
 
 
-def run_command(command: str, cwd: Path) -> tuple[bool, str]:
+def run_command(
+    command: str, cwd: Path, timeout: float = 300.0
+) -> tuple[bool, str]:
     try:
         completed = subprocess.run(
             command,
@@ -112,9 +119,19 @@ def run_command(command: str, cwd: Path) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
         combined = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
         return completed.returncode == 0, combined.strip()
+    except subprocess.TimeoutExpired as exc:
+        parts = [exc.stdout, exc.stderr]
+        output = "\n".join(
+            part.decode(errors="replace") if isinstance(part, bytes) else part
+            for part in parts
+            if part
+        ).strip()
+        message = f"command timed out after {timeout:g} seconds"
+        return False, "\n".join(part for part in (output, message) if part)
     except Exception as exc:  # pragma: no cover - defensive path
         return False, str(exc)
 
@@ -132,7 +149,7 @@ def run_checks(root: Path, config: PatchguardConfig, base: str | None = None) ->
 
     command_results: list[dict[str, str | bool]] = []
     for command in config.commands:
-        success, output = run_command(command, root)
+        success, output = run_command(command, root, timeout=config.command_timeout)
         command_results.append({"command": command, "passed": success, "output": output})
 
     commands_ok = all(item["passed"] for item in command_results)

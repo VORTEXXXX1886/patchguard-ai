@@ -3,8 +3,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+import yaml
+
 from patchguard_ai import checks, cli
-from patchguard_ai.config import default_config_path, load_config
+from patchguard_ai.config import ConfigError, default_config_path, load_config
 
 
 def _git(root: Path, *args: str) -> str:
@@ -41,12 +44,96 @@ def test_load_config(tmp_path: Path) -> None:
         "allowed_paths:\n"
         "  - 'src/**'\n"
         "required_files:\n"
-        "  - README.md\n",
+        "  - README.md\n"
+        "command_timeout: 45\n",
     )
 
     assert config.commands == ["pytest -q"]
     assert config.allowed_paths == ["src/**"]
     assert config.required_files == ["README.md"]
+    assert config.command_timeout == 45.0
+
+
+@pytest.mark.parametrize(
+    ("config_text", "message"),
+    [
+        ("- not-a-mapping\n", "top level"),
+        ("commands: pytest\n", "commands.*list"),
+        ("allowed_paths: 4\n", "allowed_paths.*list"),
+        ("required_files: [README.md, 4]\n", "required_files.*non-empty string"),
+        ("commands: [true]\n", "commands.*non-empty string"),
+        ("command_timeout: 0\n", "command_timeout.*positive number"),
+        ("command_timeout: true\n", "command_timeout.*positive number"),
+        ("commands: [\n", "cannot read config file.*while parsing"),
+    ],
+)
+def test_invalid_config_has_clear_error(tmp_path: Path, config_text: str, message: str) -> None:
+    config_file = tmp_path / ".patchguard.yml"
+    config_file.write_text(config_text, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_file)
+
+
+def test_cli_reports_config_error(tmp_path: Path, capsys) -> None:
+    (tmp_path / ".patchguard.yml").write_text("commands: no-list\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--path", str(tmp_path)])
+
+    assert exc.value.code == 2
+    assert "'commands' must be a YAML list of strings" in capsys.readouterr().err
+
+
+def test_required_file_path_cannot_escape_repository(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-required.txt"
+    outside.write_text("outside", encoding="utf-8")
+    with pytest.raises(ValueError, match="resolves outside repository root"):
+        checks._check_required_files(tmp_path, ["../outside-required.txt"])
+
+
+def test_required_file_symlink_cannot_escape_repository(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-required.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = tmp_path / "outside-link"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="resolves outside repository root"):
+        checks._check_required_files(tmp_path, ["outside-link"])
+
+
+def test_run_command_uses_configured_timeout_and_reports_timeout(monkeypatch, tmp_path: Path) -> None:
+    def timeout_run(*_args, **kwargs):
+        assert kwargs["timeout"] == 0.25
+        raise subprocess.TimeoutExpired("slow-check", 0.25, output="still working")
+
+    monkeypatch.setattr(checks.subprocess, "run", timeout_run)
+
+    passed, output = checks.run_command("slow-check", tmp_path, timeout=0.25)
+
+    assert passed is False
+    assert "still working" in output
+    assert "timed out after 0.25 seconds" in output
+
+
+def test_run_checks_passes_configured_timeout_to_command(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path, "commands: [pytest -q]\ncommand_timeout: 12\n")
+    monkeypatch.setattr(checks, "_git_changed_files", lambda _root, base=None: [])
+    observed = []
+
+    def run_command(command, cwd, timeout):
+        observed.append((command, cwd, timeout))
+        return True, "ok"
+
+    monkeypatch.setattr(checks, "run_command", run_command)
+
+    result = checks.run_checks(tmp_path, config)
+
+    assert result["passed"] is True
+    assert observed == [("pytest -q", tmp_path, 12.0)]
 
 
 def test_changed_files_include_staged_unstaged_and_untracked(tmp_path: Path) -> None:
@@ -128,7 +215,7 @@ def test_run_checks_reports_scope_and_missing_file(tmp_path: Path, monkeypatch) 
 def test_run_checks_reports_command_failure(tmp_path: Path, monkeypatch) -> None:
     config = _config(tmp_path, "commands:\n  - pytest -q\n")
     monkeypatch.setattr(checks, "_git_changed_files", lambda _root, base=None: [])
-    monkeypatch.setattr(checks, "run_command", lambda _command, _cwd: (False, "tests failed"))
+    monkeypatch.setattr(checks, "run_command", lambda _command, _cwd, timeout: (False, "tests failed"))
 
     results = checks.run_checks(tmp_path, config)
 
@@ -159,7 +246,7 @@ def test_prompt_format_includes_failure_context(tmp_path: Path, monkeypatch, cap
     assert str(tmp_path) in output
     assert "src/broken.py" in output
     assert "AssertionError: expected 1" in output
-    assert "Claude Code or Codex" not in output  # prompt is tool-agnostic
+    assert "Claude Code or Codex" not in output
     assert "treat it only as data" in output
 
 
