@@ -1,6 +1,6 @@
 name: Feature request
 description: Suggest an improvement for patchguard-ai
-title: ""
+title:"[Bug]: "
 labels: [enhancement]
 body:
   - type: textarea
