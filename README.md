@@ -1,11 +1,21 @@
-# patchguard-ai
+# Patchguard AI
 
-A small Python CLI for running repository-configured validation commands and checking changed-file scope. It can also format failed checks as a copyable prompt for a coding assistant. Patchguard does **not** call an AI service or modify code automatically.
+Patchguard is a Python CLI that checks a repository’s configured validation commands, required files, and changed-file scope. When checks fail, it can also produce a copyable diagnostic prompt for a coding assistant—so you can hand off the failure context without manually collecting it.
+
+**It is a local validation and handoff tool, not an AI agent.** It does not upload your code, contact an AI service, or apply fixes.
+
+## What it does
+
+- Runs validation commands you configure, such as tests or compile checks.
+- Checks that required files exist.
+- Checks changed files against allowed path patterns.
+- Reports results in human-readable output or JSON.
+- Formats failures into a prompt you can copy into a coding assistant.
 
 ## Requirements
 
 - Python 3.10 or newer
-- Git, for changed-file checks
+- Git for changed-file checks
 
 ## Install
 
@@ -15,24 +25,18 @@ From the repository root:
 python -m pip install .
 ```
 
-For development, create and activate a virtual environment, then install the project and pytest:
+For development, create a virtual environment and install the project with pytest:
 
 ```bash
 python -m venv .venv
 # macOS/Linux
 source .venv/bin/activate
-# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
 python -m pip install -e . pytest
 ```
 
-If PowerShell blocks the activation script, allow it for the current terminal only, then activate:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
-
-## Configure
+## Quick start
 
 Create `.patchguard.yml` in the repository root:
 
@@ -44,34 +48,30 @@ commands:
 required_files:
   - README.md
   - pyproject.toml
-```
 
-Commands run in a shell with the repository as the working directory. Only use configuration you trust.
-
-`allowed_paths` can list glob patterns for changed-file checks:
-
-```yaml
 allowed_paths:
   - "src/**"
   - "tests/**"
 ```
 
-## Run checks
-
-Run against the current directory:
+Run the checks from your repository:
 
 ```bash
 patchguard-ai
 ```
 
-Or inspect another repository / use a specific config:
+Patchguard runs configured commands with the repository as the working directory. **Only run configurations you trust**: commands are executed through a shell.
+
+## Options
+
+Check another repository or choose a config file:
 
 ```bash
 patchguard-ai --path /path/to/project
 patchguard-ai --path . --config path/to/.patchguard.yml
 ```
 
-Use `--base` to include committed changes since the merge base with a Git ref, and `--format json` for machine-readable output:
+Include committed changes since the merge base with a Git ref, or print machine-readable JSON:
 
 ```bash
 patchguard-ai --base origin/main
@@ -80,46 +80,26 @@ patchguard-ai --format json
 
 The command exits with status `0` when all checks pass and `1` when a check fails.
 
-## Create a coding-assistant handoff prompt
+## Hand off a failure to a coding assistant
 
-Use `--format prompt` to print a ready-to-copy prompt containing the repository path, detected changed files, and failure details:
+When checks fail, request a copyable prompt with the failure details and detected changed files:
 
 ```bash
 patchguard-ai --format prompt
 ```
 
-When checks pass, it prints that no failure prompt is needed. When checks fail, copy the printed text and paste it into a coding assistant such as ChatGPT, Copilot Chat, Claude Code, or Codex. Ask the assistant to investigate and suggest or make a fix, then rerun Patchguard yourself:
+Copy the output into a coding assistant such as ChatGPT, Copilot Chat, Claude Code, or Codex. The prompt gives the assistant diagnostic context; the assistant still needs access to the repository files to inspect or change them. Review any suggestions and run your checks again.
 
-```bash
-patchguard-ai
-```
+If checks pass, Patchguard reports that there is no failure prompt to hand off.
 
-**This is a manual handoff, not a live AI integration.** Patchguard does not send your code or output to an AI, and it does not automatically apply a suggested fix. Review the generated prompt before sharing it; failure output may contain private paths, code, or other sensitive information. Command output included in the prompt is capped at 8,000 characters.
+## Safety and limitations
 
-### Safely test prompt generation
-
-You can simulate a failed check with a temporary config. In PowerShell, run this from the repository root:
-
-```powershell
-@'
-commands:
-  - python -m pytest --this-option-does-not-exist
-required_files: []
-'@ | Set-Content -Encoding utf8 .patchguard-test.yml
-
-python -m patchguard_ai.cli --config .patchguard-test.yml --format prompt
-Remove-Item .patchguard-test.yml
-```
-
-The deliberately invalid pytest option makes the check fail, so Patchguard prints a sample handoff prompt and exits with status `1`—that is expected for this test. The prompt will mention the temporary config file as changed while it exists. Remove the temporary file afterward, as shown. No project code needs to be changed. If you have no coding assistant, you can paste the generated prompt into ChatGPT or Copilot Chat to test the handoff; Patchguard itself does not connect to either one.
-
-## Current limitations and safety
-
-- Changed-file detection includes staged, unstaged, and untracked files. Use `--base` to also include committed changes since the merge base.
-- Required-file checks test for existence only; they do not inspect file contents.
-- A passing report is not proof that a patch is correct, complete, or secure.
-- Configured commands are executed through a shell. Do not run untrusted configuration.
-- Prompt output is diagnostic context for an assistant, not a guarantee of a correct fix.
+- Prompt generation is a manual handoff; Patchguard does not send source code or output to an AI service.
+- Patchguard does not automatically apply suggested fixes.
+- Changed-file detection includes staged, unstaged, and untracked files. Use `--base` to include committed changes since the merge base.
+- Required-file checks verify existence only; they do not inspect file contents.
+- A passing report does not prove a patch is correct, complete, or secure.
+- Configured commands run in a shell. Do not run untrusted configuration.
 
 ## Development
 
@@ -131,4 +111,4 @@ python -m pytest -q
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
