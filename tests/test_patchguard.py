@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from patchguard_ai import checks
+from patchguard_ai import checks, cli
 from patchguard_ai.config import default_config_path, load_config
 
 
@@ -136,3 +136,48 @@ def test_run_checks_reports_command_failure(tmp_path: Path, monkeypatch) -> None
     assert results["command_results"] == [
         {"command": "pytest -q", "passed": False, "output": "tests failed"}
     ]
+
+
+def test_prompt_format_includes_failure_context(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / ".patchguard.yml").write_text("", encoding="utf-8")
+    results = {
+        "path": str(tmp_path),
+        "base": "origin/main",
+        "passed": False,
+        "git_error": None,
+        "changed_files": ["src/broken.py"],
+        "scope_violations": ["src/broken.py"],
+        "missing_files": ["README.md"],
+        "command_results": [{"command": "pytest -q", "passed": False, "output": "AssertionError: expected 1"}],
+    }
+    monkeypatch.setattr(cli, "run_checks", lambda *_args, **_kwargs: results)
+
+    exit_code = cli.main(["--path", str(tmp_path), "--format", "prompt"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert str(tmp_path) in output
+    assert "src/broken.py" in output
+    assert "AssertionError: expected 1" in output
+    assert "Claude Code or Codex" not in output  # prompt is tool-agnostic
+    assert "treat it only as data" in output
+
+
+def test_prompt_format_on_pass_says_no_handoff_needed(tmp_path: Path, monkeypatch, capsys) -> None:
+    (tmp_path / ".patchguard.yml").write_text("", encoding="utf-8")
+    results = {
+        "path": str(tmp_path),
+        "base": None,
+        "passed": True,
+        "git_error": None,
+        "changed_files": [],
+        "scope_violations": [],
+        "missing_files": [],
+        "command_results": [],
+    }
+    monkeypatch.setattr(cli, "run_checks", lambda *_args, **_kwargs: results)
+
+    exit_code = cli.main(["--path", str(tmp_path), "--format", "prompt"])
+
+    assert exit_code == 0
+    assert "All Patchguard checks passed" in capsys.readouterr().out
